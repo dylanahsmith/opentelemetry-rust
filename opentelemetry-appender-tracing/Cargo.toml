@@ -18,6 +18,7 @@ tracing = { workspace = true, features = ["std"]}
 tracing-core = { workspace = true }
 tracing-log = { version = "0.2", optional = true }
 tracing-subscriber = { workspace = true, features = ["registry", "std"] }
+tracing-opentelemetry = { version = "0.27" }
 
 [dev-dependencies]
 log = { workspace = true }

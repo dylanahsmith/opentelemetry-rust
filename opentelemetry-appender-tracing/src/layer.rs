@@ -1,15 +1,17 @@
 use opentelemetry::{
     logs::{AnyValue, LogRecord, Logger, LoggerProvider, Severity},
+    trace::{SpanContext, TraceFlags, TraceState},
     Key,
 };
-use opentelemetry_sdk::logs::Logger as SdkLogger;
+use opentelemetry_sdk::logs::{Logger as SdkLogger, TraceContext};
 use std::borrow::Cow;
 use tracing_core::Level;
 #[cfg(feature = "experimental_metadata_attributes")]
 use tracing_core::Metadata;
 #[cfg(feature = "experimental_metadata_attributes")]
 use tracing_log::NormalizeEvent;
-use tracing_subscriber::Layer;
+use tracing_opentelemetry::OtelData;
+use tracing_subscriber::{registry::LookupSpan, Layer};
 
 const INSTRUMENTATION_LIBRARY_NAME: &str = "opentelemetry-appender-tracing";
 
@@ -147,14 +149,10 @@ where
 
 impl<S, P> Layer<S> for OpenTelemetryTracingBridge<P>
 where
-    S: tracing::Subscriber,
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
     P: LoggerProvider<Logger = SdkLogger> + Send + Sync + 'static,
 {
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
+    fn on_event(&self, event: &tracing::Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
         #[cfg(feature = "experimental_metadata_attributes")]
         let normalized_meta = event.normalized_metadata();
 
@@ -176,6 +174,31 @@ where
         visitor.visit_experimental_metadata(meta);
         // Visit fields.
         event.record(&mut visitor);
+
+        if let Some(span) = ctx.event_span(event) {
+            let opt_span_id = span
+                .extensions()
+                .get::<OtelData>()
+                .and_then(|otd| otd.builder.span_id);
+
+            let opt_trace_id = span.scope().last().and_then(|root_span| {
+                root_span
+                    .extensions()
+                    .get::<OtelData>()
+                    .map(|otd| otd.builder.trace_id.clone())
+                    .flatten()
+            });
+
+            if let Some((trace_id, span_id)) = opt_trace_id.zip(opt_span_id) {
+                log_record.trace_context = Some(TraceContext::from(&SpanContext::new(
+                    trace_id,
+                    span_id,
+                    TraceFlags::default(),
+                    false,
+                    TraceState::default(),
+                )));
+            }
+        }
 
         //emit record
         self.logger.emit(log_record);
@@ -212,10 +235,12 @@ mod tests {
     use opentelemetry::{logs::AnyValue, Key};
     use opentelemetry_sdk::logs::{LogRecord, LoggerProvider};
     use opentelemetry_sdk::testing::logs::InMemoryLogsExporter;
+    use opentelemetry_sdk::testing::trace::InMemorySpanExporterBuilder;
     use opentelemetry_sdk::trace;
     use opentelemetry_sdk::trace::{Sampler, TracerProvider};
     use tracing::error;
     use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::Layer;
 
     pub fn attributes_contains(log_record: &LogRecord, key: &Key, value: &AnyValue) -> bool {
         log_record
@@ -415,6 +440,64 @@ mod tests {
             assert!(attributes_key.contains(&Key::new("code.lineno")));
             assert!(!attributes_key.contains(&Key::new("log.target")));
         }
+    }
+
+    #[test]
+    fn tracing_appender_inside_tracing_crate_context() {
+        // Arrange
+        let exporter: InMemoryLogsExporter = InMemoryLogsExporter::default();
+        let logger_provider = LoggerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+
+        // setup tracing layer to compare trace/span IDs against
+        let span_exporter = InMemorySpanExporterBuilder::new().build();
+        let tracer_provider = TracerProvider::builder()
+            .with_simple_exporter(span_exporter.clone())
+            .build();
+        let tracer = tracer_provider.tracer("test-tracer");
+
+        let level_filter = tracing_subscriber::filter::LevelFilter::INFO;
+        let log_layer =
+            layer::OpenTelemetryTracingBridge::new(&logger_provider).with_filter(level_filter);
+
+        let subscriber = tracing_subscriber::registry()
+            .with(log_layer)
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        // Avoiding global subscriber.init() as that does not play well with unit tests.
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // Act
+        tracing::info_span!("outer-span").in_scope(|| {
+            error!("first-event");
+
+            tracing::info_span!("inner-span").in_scope(|| {
+                error!("second-event");
+            });
+        });
+
+        logger_provider.force_flush();
+
+        let logs = exporter.get_emitted_logs().expect("No emitted logs");
+        assert_eq!(logs.len(), 2);
+
+        let spans = span_exporter.get_finished_spans().unwrap();
+        assert_eq!(spans.len(), 2);
+
+        let trace_id = spans[0].span_context.trace_id();
+        assert_eq!(trace_id, spans[1].span_context.trace_id());
+        let inner_span_id = spans[0].span_context.span_id();
+        let outer_span_id = spans[1].span_context.span_id();
+        assert_eq!(outer_span_id, spans[0].parent_span_id);
+
+        let trace_ctx0 = logs[0].record.trace_context.as_ref().unwrap();
+        let trace_ctx1 = logs[1].record.trace_context.as_ref().unwrap();
+
+        assert_eq!(trace_ctx0.trace_id, trace_id);
+        assert_eq!(trace_ctx1.trace_id, trace_id);
+        assert_eq!(trace_ctx0.span_id, outer_span_id);
+        assert_eq!(trace_ctx1.span_id, inner_span_id);
     }
 
     #[test]
