@@ -12,8 +12,8 @@ rust-version = "1.65"
 
 [dependencies]
 log = { workspace = true, optional = true }
-opentelemetry = { version = "0.26", path = "../opentelemetry", features = ["logs"] }
-opentelemetry_sdk = { version = "0.26", path = "../opentelemetry-sdk", features = ["logs"]  }
+opentelemetry = { version = "0.26", features = ["logs"] }
+opentelemetry_sdk = { version = "0.26", features = ["logs"]  }
 tracing = { workspace = true, features = ["std"]}
 tracing-core = { workspace = true }
 tracing-log = { version = "0.2", optional = true }
@@ -22,8 +22,8 @@ tracing-opentelemetry = { version = "0.27" }
 
 [dev-dependencies]
 log = { workspace = true }
-opentelemetry-stdout = { path = "../opentelemetry-stdout", features = ["logs"] }
-opentelemetry_sdk = { path = "../opentelemetry-sdk", features = ["logs", "testing"]  }
+opentelemetry-stdout = { version = "0.26", features = ["logs"] }
+opentelemetry_sdk = { version = "0.26", features = ["logs", "testing"]  }
 tracing-log = "0.2"
 async-trait = { workspace = true }
 criterion = { workspace = true }
