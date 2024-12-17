@@ -2,6 +2,7 @@ use opentelemetry::{
     logs::{AnyValue, LogRecord, Logger, LoggerProvider, Severity},
     Key,
 };
+use opentelemetry_sdk::logs::Logger as SdkLogger;
 use std::borrow::Cow;
 use tracing_core::Level;
 #[cfg(feature = "experimental_metadata_attributes")]
@@ -121,19 +122,17 @@ impl<'a, LR: LogRecord> tracing::field::Visit for EventVisitor<'a, LR> {
     // TODO: Remaining field types from AnyValue : Bytes, ListAny, Boolean
 }
 
-pub struct OpenTelemetryTracingBridge<P, L>
+pub struct OpenTelemetryTracingBridge<P>
 where
-    P: LoggerProvider<Logger = L> + Send + Sync,
-    L: Logger + Send + Sync,
+    P: LoggerProvider<Logger = SdkLogger> + Send + Sync,
 {
-    logger: L,
+    logger: SdkLogger,
     _phantom: std::marker::PhantomData<P>, // P is not used.
 }
 
-impl<P, L> OpenTelemetryTracingBridge<P, L>
+impl<P> OpenTelemetryTracingBridge<P>
 where
-    P: LoggerProvider<Logger = L> + Send + Sync,
-    L: Logger + Send + Sync,
+    P: LoggerProvider<Logger = SdkLogger> + Send + Sync,
 {
     pub fn new(provider: &P) -> Self {
         OpenTelemetryTracingBridge {
@@ -146,11 +145,10 @@ where
     }
 }
 
-impl<S, P, L> Layer<S> for OpenTelemetryTracingBridge<P, L>
+impl<S, P> Layer<S> for OpenTelemetryTracingBridge<P>
 where
     S: tracing::Subscriber,
-    P: LoggerProvider<Logger = L> + Send + Sync + 'static,
-    L: Logger + Send + Sync + 'static,
+    P: LoggerProvider<Logger = SdkLogger> + Send + Sync + 'static,
 {
     fn on_event(
         &self,
